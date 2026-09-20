@@ -1,27 +1,23 @@
 import React, { useState } from 'react';
-import { Download, FileSpreadsheet, FileText, FileCode, Check, Loader2 } from 'lucide-react';
-import { getExportUrl } from '../../services/api';
+import { Download, FileSpreadsheet, FileText, FileCode, Loader2 } from 'lucide-react';
+import { triggerExport } from '../../services/api';
 
-export default function ExportToolbar({ jobId, totalRecords = 0 }) {
+export default function ExportToolbar({ jobId, totalRecords = 0, records = [], fields = [] }) {
   const [downloadingFormat, setDownloadingFormat] = useState(null);
 
-  const handleExport = (format) => {
+  const handleExport = async (format) => {
     if (!jobId || totalRecords === 0) return;
     setDownloadingFormat(format);
 
-    const url = getExportUrl(jobId, format);
-    
-    // Trigger direct browser download
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `linkedin_research_${format}_${Date.now()}`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-
-    setTimeout(() => {
-      setDownloadingFormat(null);
-    }, 1500);
+    try {
+      await triggerExport(jobId, format, records, fields);
+    } catch (err) {
+      console.error('Export error:', err);
+    } finally {
+      setTimeout(() => {
+        setDownloadingFormat(null);
+      }, 1200);
+    }
   };
 
   return (

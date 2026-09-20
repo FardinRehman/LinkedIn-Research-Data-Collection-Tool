@@ -89,7 +89,7 @@ export default function DynamicDataTable({
   return (
     <div className="space-y-4 animate-fade-in">
       {/* Export Toolbar */}
-      <ExportToolbar jobId={jobId} totalRecords={totalRecords} />
+      <ExportToolbar jobId={jobId} totalRecords={totalRecords} records={records} fields={fields} />
 
       {/* Table Container */}
       <div className="glass-panel rounded-2xl border border-slate-800 overflow-hidden shadow-2xl">
