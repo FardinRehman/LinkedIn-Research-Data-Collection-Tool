@@ -3,26 +3,26 @@
  * Allows visitors to run full research collections, dynamic fields,
  * and exports directly in their browser without requiring a backend.
  */
-import { PRESETS } from '../types/fields';
-
 export class ClientResearchEngine {
   constructor() {
     this.jobs = new Map();
   }
 
-  createJob({ query, limit = 50, fields = [], category = 'people' }) {
+  createJob({ query = '', limit = 50, fields = [], category = 'people' }) {
     const jobId = `job_${Date.now()}`;
     const selectedFields = fields.filter(f => f.selected !== false);
 
+    const parsedLimit = Math.max(1, Math.min(Number(limit) || 50, 250));
+
     const job = {
       id: jobId,
-      query,
-      limit,
+      query: query.trim() || 'LinkedIn Research',
+      limit: parsedLimit,
       fields: selectedFields,
-      category,
+      category: category || 'people',
       status: 'in_progress',
       progress: {
-        totalTarget: limit,
+        totalTarget: parsedLimit,
         processedRecords: 0,
         uniqueRecords: 0,
         duplicateRecords: 0,
@@ -40,7 +40,8 @@ export class ClientResearchEngine {
       results: [],
       failedItems: [],
       recentLogs: [
-        { timestamp: new Date().toISOString(), level: 'info', message: `Job started for query "${query}" (${limit} target records)` }
+        { timestamp: new Date().toISOString(), level: 'info', message: `Job initialized for query "${query}" targeting ${parsedLimit} records.` },
+        { timestamp: new Date().toISOString(), level: 'info', message: `Using Simulation Engine. Starting collection...` }
       ]
     };
 
@@ -54,44 +55,54 @@ export class ClientResearchEngine {
   }
 
   async _simulateCollection(job) {
-    const totalBatches = Math.min(Math.ceil(job.limit / 10), 10);
+    const batchSize = 10;
+    const totalBatches = Math.ceil(job.limit / batchSize);
     const seenUrls = new Set();
 
     for (let batch = 1; batch <= totalBatches; batch++) {
-      await new Promise(r => setTimeout(r, 400)); // Latency simulation
+      await new Promise(r => setTimeout(r, 280)); // Realistic smooth animation
       job.progress.currentPage = batch;
       job.metrics.pagesProcessed = batch;
 
-      const itemsInBatch = Math.min(10, job.limit - job.results.length);
-      for (let i = 0; i < itemsInBatch; i++) {
-        job.progress.processedRecords++;
-        const index = (batch - 1) * 10 + i;
+      const itemsToGenerate = Math.min(batchSize, job.limit - job.results.length);
 
-        // Simulate duplicate every 7th record
-        const isDup = index > 3 && index % 7 === 0;
-        const effectiveIndex = isDup ? Math.max(0, index - 3) : index;
+      for (let i = 0; i < itemsToGenerate; i++) {
+        job.progress.processedRecords++;
+        const globalIdx = (batch - 1) * batchSize + i;
+
+        // Introduce simulated duplicate every 7th record
+        const isDup = globalIdx > 2 && globalIdx % 7 === 0;
+        const effectiveIndex = isDup ? Math.max(0, globalIdx - 3) : globalIdx;
 
         const raw = job.category === 'companies'
           ? this._generateCompany(effectiveIndex, job.query)
           : this._generatePerson(effectiveIndex, job.query);
 
-        const canonicalUrl = (raw.profileUrl || raw.companyUrl || '').toLowerCase();
-        if (seenUrls.has(canonicalUrl)) {
+        const uniqueKey = (raw.profileUrl || raw.companyUrl || `${raw.name}|${raw.company}`).toLowerCase();
+        if (seenUrls.has(uniqueKey)) {
           job.progress.duplicateRecords++;
           job.metrics.duplicates++;
           job.recentLogs.push({
             timestamp: new Date().toISOString(),
             level: 'debug',
-            message: `Duplicate filtered: ${canonicalUrl}`
+            message: `Duplicate detected and filtered: ${raw.name || raw.companyName}`
           });
           continue;
         }
-        seenUrls.add(canonicalUrl);
+        seenUrls.add(uniqueKey);
 
-        // Project strictly to selected fields
+        // Project strictly to selected dynamic fields
         const projected = { _id: `rec_${job.results.length + 1}` };
         for (const f of job.fields) {
-          projected[f.key] = raw[f.key] !== undefined ? raw[f.key] : (f.isCustom ? '' : '');
+          const key = f.key;
+          if (raw[key] !== undefined && raw[key] !== null) {
+            projected[key] = raw[key];
+          } else if (f.isCustom) {
+            // Assign smart default for popular custom fields if recognized
+            projected[key] = raw[this._normalizeKey(key)] || raw.fundingStage || raw.skills || 'Configured';
+          } else {
+            projected[key] = '';
+          }
         }
 
         job.results.push(projected);
@@ -105,7 +116,7 @@ export class ClientResearchEngine {
       job.recentLogs.push({
         timestamp: new Date().toISOString(),
         level: 'info',
-        message: `Processed page ${batch} (${job.results.length}/${job.limit} unique records collected)`
+        message: `Page ${batch} processed (${job.results.length}/${job.limit} unique records collected)`
       });
 
       if (job.results.length >= job.limit) break;
@@ -116,53 +127,93 @@ export class ClientResearchEngine {
     job.recentLogs.push({
       timestamp: new Date().toISOString(),
       level: 'info',
-      message: `Data collection completed! Total: ${job.results.length} unique records.`
+      message: `Job completed successfully! Total unique collected: ${job.results.length}, Duplicates removed: ${job.metrics.duplicates}`
     });
   }
 
   _generatePerson(index, query) {
-    const names = ['Arjun Sharma', 'Priya Patel', 'Rohan Verma', 'Ananya Gupta', 'Vikram Iyer', 'Neha Reddy', 'Aditya Mehta', 'Sneha Kapoor'];
-    const titles = ['Chief Technology Officer', 'VP of Engineering', 'Head of AI', 'Founder & CTO', 'Lead Architect'];
-    const companies = ['ZeptoFin Labs', 'RazorPay Technologies', 'KreditEase AI', 'BharatSaaS Tech', 'HyperScale Cloud'];
-    const locations = ['Bengaluru, Karnataka, India', 'Mumbai, Maharashtra, India', 'Gurugram, Haryana, India', 'Hyderabad, Telangana, India'];
-    const stages = ['Series A ($12M)', 'Series B ($35M)', 'Seed ($2.5M)', 'Bootstrapped', 'Profitable'];
+    const firstNames = ['Arjun', 'Priya', 'Rohan', 'Ananya', 'Vikram', 'Neha', 'Aditya', 'Sneha', 'Kabir', 'Divya', 'Siddharth', 'Tanvi', 'Rajesh', 'Pooja', 'Alex', 'Elena'];
+    const lastNames = ['Sharma', 'Patel', 'Verma', 'Gupta', 'Iyer', 'Reddy', 'Mehta', 'Kapoor', 'Chopra', 'Nair', 'Deshmukh', 'Singhania', 'Bose', 'Mukherjee'];
+    const titles = ['Chief Technology Officer', 'VP of Engineering', 'Head of Technology', 'Founder & CTO', 'Director of Engineering', 'Principal Architect', 'VP of AI & ML Engineering'];
+    const companies = ['ZeptoFin Labs', 'RazorPay Technologies', 'KreditEase AI', 'BharatSaaS Tech', 'HyperScale Cloud', 'FinNexus India', 'ZetaStack Systems', 'PaySprint Networks'];
+    const locations = ['Bengaluru, Karnataka, India', 'Mumbai, Maharashtra, India', 'Gurugram, Haryana, India', 'Hyderabad, Telangana, India', 'Pune, Maharashtra, India', 'Delhi NCR, India'];
+    const industries = ['Financial Services / FinTech', 'Enterprise Software & SaaS', 'Artificial Intelligence', 'Cloud & Cyber Security'];
+    const stages = ['Series A ($12M)', 'Series B ($35M)', 'Seed ($2.5M)', 'Series C ($70M)', 'Bootstrapped', 'Profitable / Scaled'];
 
-    const fullName = names[index % names.length] + (index >= names.length ? ` ${Math.floor(index / names.length) + 1}` : '');
-    const slug = fullName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const firstName = firstNames[index % firstNames.length];
+    const lastName = lastNames[(index * 3) % lastNames.length];
+    const suffix = index >= firstNames.length ? ` ${Math.floor(index / firstNames.length) + 1}` : '';
+    const fullName = `${firstName} ${lastName}${suffix}`;
+    const slug = `${firstName.toLowerCase()}-${lastName.toLowerCase()}-${index + 101}`;
     const comp = companies[index % companies.length];
+    const compSlug = comp.toLowerCase().replace(/[^a-z0-9]/g, '');
 
     return {
       name: fullName,
+      fullName: fullName,
       jobTitle: titles[index % titles.length],
+      title: titles[index % titles.length],
       company: comp,
+      companyName: comp,
       location: locations[index % locations.length],
       profileUrl: `https://www.linkedin.com/in/${slug}`,
-      companyWebsite: `https://www.${comp.toLowerCase().replace(/[^a-z0-9]/g, '')}.io`,
-      industry: 'FinTech / Software',
-      fundingStage: stages[index % stages.length]
+      companyWebsite: `https://www.${compSlug}.io`,
+      website: `https://www.${compSlug}.io`,
+      industry: industries[index % industries.length],
+      headline: `${titles[index % titles.length]} at ${comp} | Scaling High-Concurrency Systems`,
+      experienceYears: 8 + (index % 12),
+      skills: 'System Design, Microservices, Node.js, Python, Kubernetes, AWS',
+      education: 'Indian Institute of Technology / B.Tech Computer Science',
+      emailStatus: index % 2 === 0 ? 'Verified Work Email Available' : 'Searchable via Domain',
+      fundingStage: stages[index % stages.length],
+      employeeCount: `${50 + (index * 45 * 3) % 1500} employees`
     };
   }
 
   _generateCompany(index, query) {
     const companies = [
-      { name: 'KreditEase AI', ind: 'Financial Services & AI Lending' },
-      { name: 'PaySprint Gateway', ind: 'Payment Gateway & Banking APIs' },
-      { name: 'NexusWealth Robo-Advisory', ind: 'WealthTech & Asset Management' },
-      { name: 'InnoInsurTech India', ind: 'InsurTech & Risk Analytics' }
+      { name: 'KreditEase AI', domain: 'kreditease.ai', ind: 'Financial Services & Lending Tech' },
+      { name: 'PaySprint Gateway', domain: 'paysprint.com', ind: 'Payment Gateway & Banking APIs' },
+      { name: 'NexusWealth Robo-Advisory', domain: 'nexuswealth.io', ind: 'WealthTech & Asset Management' },
+      { name: 'InnoInsurTech India', domain: 'innoinsur.co', ind: 'InsurTech & Risk Analytics' },
+      { name: 'BharatCrypto Custody', domain: 'bharatcrypto.io', ind: 'Digital Assets & Web3 Security' },
+      { name: 'SaaSFlow Subscriptions', domain: 'saasflow.com', ind: 'Billing & Recurring Payments' },
+      { name: 'QuantLedger Analytics', domain: 'quantledger.tech', ind: 'High-Frequency Trading & Market Data' }
     ];
+    const locations = ['Bengaluru, Karnataka, India', 'Mumbai, Maharashtra, India', 'Gurugram, Haryana, India', 'Hyderabad, Telangana, India'];
+    const stages = ['Seed ($1.8M)', 'Pre-Series A ($4.2M)', 'Series A ($12M)', 'Series B ($35M)', 'Series C ($90M)', 'Profitable'];
+    const employeeBuckets = ['11-50 employees', '51-200 employees', '201-500 employees', '501-1,000 employees'];
+
     const comp = companies[index % companies.length];
-    const compName = comp.name + (index >= companies.length ? ` ${Math.floor(index / companies.length) + 1}` : '');
-    const slug = compName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const suffix = index >= companies.length ? ` ${Math.floor(index / companies.length) + 1}` : '';
+    const slugSuffix = index >= companies.length ? `-${Math.floor(index / companies.length) + 1}` : '';
+    const compName = `${comp.name}${suffix}`;
+    const slug = `${comp.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}${slugSuffix}`;
 
     return {
       companyName: compName,
+      name: compName,
       companyUrl: `https://www.linkedin.com/company/${slug}`,
+      profileUrl: `https://www.linkedin.com/company/${slug}`,
+      website: `https://www.${comp.domain}`,
+      companyWebsite: `https://www.${comp.domain}`,
       industry: comp.ind,
-      employeeCount: '51-200 employees',
-      location: 'Bengaluru, Karnataka, India',
-      website: `https://www.${slug.replace(/[^a-z0-9]/g, '')}.com`,
-      fundingStage: 'Series A ($8.5M)'
+      location: locations[index % locations.length],
+      headquarters: locations[index % locations.length],
+      employeeCount: employeeBuckets[index % employeeBuckets.length],
+      fundingStage: stages[index % stages.length],
+      foundedYear: 2017 + (index % 7),
+      specialties: 'API Integrations, Cloud Security, Automated Reconciliation, Real-Time Settlements',
+      type: 'Privately Held'
     };
+  }
+
+  _normalizeKey(str) {
+    if (!str) return '';
+    return str
+      .replace(/[^a-zA-Z0-9]+(.)/g, (_, chr) => chr.toUpperCase())
+      .replace(/^[A-Z]/, chr => chr.toLowerCase())
+      .replace(/[^a-zA-Z0-9]/g, '');
   }
 
   exportClientData(records, fields, format) {

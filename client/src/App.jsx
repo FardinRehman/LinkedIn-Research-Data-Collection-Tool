@@ -73,24 +73,32 @@ export default function App() {
 
   // Completion callback when job finishes
   const handleJobCompleted = useCallback(async (finalJobState) => {
-    if (finalJobState?.jobId) {
-      await fetchResults(finalJobState.jobId, 1, '');
+    const id = finalJobState?.jobId || finalJobState?.id || activeJobId;
+    if (id) {
+      await fetchResults(id, 1, '');
       try {
-        const failedRes = await getFailedRecords(finalJobState.jobId);
+        const failedRes = await getFailedRecords(id);
         setFailedItems(failedRes?.data?.items || []);
       } catch (err) {
         console.warn('Failed to load failure diagnostics:', err);
       }
     }
-  }, [fetchResults]);
+  }, [fetchResults, activeJobId]);
 
-  // Hook for live SSE progress stream
+  // Hook for live SSE / client progress stream
   const {
     jobState,
     isConnected,
     status: jobStatus,
     isFinished
   } = useJobStream(activeJobId, handleJobCompleted);
+
+  // Fallback trigger to guarantee results are fetched once job is completed
+  useEffect(() => {
+    if (activeJobId && jobState?.status === 'completed' && results.length === 0) {
+      fetchResults(activeJobId, 1, tableSearch);
+    }
+  }, [activeJobId, jobState?.status, results.length, tableSearch, fetchResults]);
 
   // Preset switching
   const handleSelectPreset = (presetKey) => {

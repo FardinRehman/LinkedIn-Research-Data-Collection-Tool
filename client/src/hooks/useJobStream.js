@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { getJobStatus } from '../services/api';
+import { getJobStatus, checkBackend } from '../services/api';
 
 export function useJobStream(jobId, onJobCompleted) {
   const [jobState, setJobState] = useState(null);
@@ -22,6 +22,7 @@ export function useJobStream(jobId, onJobCompleted) {
   }, []);
 
   const handleUpdate = useCallback((data) => {
+    if (!data) return;
     setJobState(data);
     const isTerminal = ['completed', 'failed', 'cancelled'].includes(data.status);
     
@@ -43,54 +44,86 @@ export function useJobStream(jobId, onJobCompleted) {
     completedCalledRef.current = false;
     setStreamError(null);
 
-    // Initial fetch to get state immediately
-    getJobStatus(jobId)
-      .then((res) => {
-        if (res?.data) {
-          handleUpdate(res.data);
-        }
-      })
-      .catch((err) => {
-        console.warn('Initial job status fetch failed:', err);
-      });
+    let isMounted = true;
 
-    // Setup Server-Sent Events (SSE)
-    const eventUrl = `/api/jobs/${jobId}/events`;
-    const es = new EventSource(eventUrl);
-    eventSourceRef.current = es;
+    async function initStream() {
+      const hasBackend = await checkBackend();
 
-    es.onopen = () => {
-      setIsConnected(true);
-      setStreamError(null);
-    };
+      if (!isMounted) return;
 
-    es.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        handleUpdate(payload);
-      } catch (parseErr) {
-        console.error('SSE JSON parse error:', parseErr);
-      }
-    };
-
-    es.onerror = () => {
-      setIsConnected(false);
-      // If SSE errors out, fallback to light polling
-      if (!pollingTimerRef.current) {
+      if (!hasBackend) {
+        // Standalone Client Mode (GitHub Pages)
+        setIsConnected(true);
+        // Fast polling loop on client engine
         pollingTimerRef.current = setInterval(async () => {
           try {
             const res = await getJobStatus(jobId);
-            if (res?.data) {
+            if (res?.data && isMounted) {
               handleUpdate(res.data);
             }
-          } catch (pollErr) {
-            console.error('Polling error:', pollErr);
+          } catch (err) {
+            console.warn('Client job poll error:', err);
           }
-        }, 1200);
+        }, 300);
+        return;
       }
-    };
+
+      // Backend SSE Mode
+      try {
+        const initialRes = await getJobStatus(jobId);
+        if (initialRes?.data && isMounted) {
+          handleUpdate(initialRes.data);
+        }
+      } catch (err) {
+        console.warn('Initial job status fetch failed:', err);
+      }
+
+      const eventUrl = `/api/jobs/${jobId}/events`;
+      const es = new EventSource(eventUrl);
+      eventSourceRef.current = es;
+
+      es.onopen = () => {
+        if (isMounted) {
+          setIsConnected(true);
+          setStreamError(null);
+        }
+      };
+
+      es.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (isMounted) {
+            handleUpdate(payload);
+          }
+        } catch (parseErr) {
+          console.error('SSE JSON parse error:', parseErr);
+        }
+      };
+
+      es.onerror = () => {
+        if (isMounted) {
+          setIsConnected(false);
+          // Fallback to polling
+          if (!pollingTimerRef.current) {
+            pollingTimerRef.current = setInterval(async () => {
+              try {
+                const res = await getJobStatus(jobId);
+                if (res?.data && isMounted) {
+                  handleUpdate(res.data);
+                }
+              } catch (pollErr) {
+                console.error('Polling error:', pollErr);
+              }
+            }, 1000);
+          }
+        }
+      };
+    }
+
+    initStream();
 
     return () => {
+      isMounted = false;
       cleanup();
     };
   }, [jobId, handleUpdate, cleanup]);
